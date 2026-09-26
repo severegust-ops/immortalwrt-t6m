@@ -3,25 +3,17 @@ name: Build ImmortalWrt 25.12 - Qihoo 360 T6M
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          df -h
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
 
-      -       - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             build-essential \
             clang \
@@ -46,12 +38,6 @@ jobs:
             wget \
             xsltproc \
             libelf-dev \
-            ecj \
-            fastjar \
-            java-propose-classpath \
-            libpython3-dev \
-            python3-ply \
-            python3-docutils \
             device-tree-compiler \
             qemu-utils \
             ccache \
@@ -70,68 +56,25 @@ jobs:
 
       - name: Clone ImmortalWrt 25.12
         run: |
-          git clone \
-            --branch openwrt-25.12 \
-            --single-branch \
-            https://github.com/immortalwrt/immortalwrt.git
-
-          cd immortalwrt
-
-          echo "ImmortalWrt commit:"
-          git log -1 --oneline
-
-      - name: Download T6M support patch
-        run: |
-          cd immortalwrt
-
-          git fetch \
+          git clone --branch openwrt-25.12 --single-branch \
             https://github.com/immortalwrt/immortalwrt.git \
+            immortalwrt
+
+      - name: Apply Qihoo 360 T6M support
+        working-directory: immortalwrt
+        run: |
+          git fetch https://github.com/immortalwrt/immortalwrt.git \
             pull/2436/head:t6m-pr
 
-          git log --oneline --decorate -10 t6m-pr
-
-      - name: Apply T6M commits
-        run: |
-          cd immortalwrt
-
-          # Find commits belonging to the T6M PR
-          git log --reverse \
-            --format='%H' \
-            HEAD..t6m-pr > /tmp/t6m-commits
-
-          echo "T6M commits:"
-          cat /tmp/t6m-commits
-
-          # Apply the PR as a patch instead of cherry-picking
           git diff HEAD..t6m-pr > /tmp/t6m.patch
-
-          if [ ! -s /tmp/t6m.patch ]; then
-            echo "ERROR: T6M patch is empty"
-            exit 1
-          fi
 
           git apply --3way /tmp/t6m.patch
 
-          echo "T6M changes applied successfully."
-
-      - name: Verify T6M device definition
+      - name: Verify T6M support
+        working-directory: immortalwrt
         run: |
-          cd immortalwrt
-
-          echo "Searching for T6M support..."
-
-          grep -Rni \
-            "360t6m\|360-t6m\|t6m" \
-            target/linux/ramips \
-            target/linux/ramips/image \
-            target/linux/ramips/mt7621 \
-            2>/dev/null | head -100 || true
-
-          echo "Checking DTS files..."
-
-          find target/linux/ramips -type f \
-            \( -iname "*t6m*" -o -iname "*360*" \) \
-            -print
+          echo "Checking for Qihoo 360 T6M files..."
+          find target package -iname '*t6m*' -o -iname '*360*' | head -100
 
       - name: Update feeds
         working-directory: immortalwrt
@@ -139,7 +82,7 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Select MT7621 target
+      - name: Configure build
         working-directory: immortalwrt
         run: |
           cat > .config <<'EOF'
@@ -150,54 +93,33 @@ jobs:
 
           make defconfig
 
-      - name: Verify target configuration
+      - name: Show target configuration
         working-directory: immortalwrt
         run: |
-          echo "===== TARGET CONFIG ====="
-          grep '^CONFIG_TARGET' .config
-
-          echo "===== T6M references ====="
-          grep -Rni "qihoo.*t6m\|360.*t6m" \
-            target/linux/ramips \
-            2>/dev/null || true
+          grep -E 'CONFIG_TARGET|360.*T6M|T6M' .config || true
 
       - name: Download package sources
         working-directory: immortalwrt
         run: |
-          make download -j8 V=s
+          make download -j8
 
       - name: Build firmware
         working-directory: immortalwrt
         run: |
           make -j$(nproc) V=s
 
-      - name: Show generated firmware
+      - name: List firmware files
         working-directory: immortalwrt
         run: |
-          echo "======================================"
-          echo "GENERATED FIRMWARE"
-          echo "======================================"
+          find bin/targets -type f \( \
+            -name '*.bin' -o \
+            -name '*.itb' -o \
+            -name '*.img' \
+          \) -print
 
-          find bin/targets/ramips/mt7621 \
-            -type f \
-            \( -name "*.bin" -o -name "*.itb" \) \
-            -print
-
-          echo "======================================"
-          echo "SHA256"
-          echo "======================================"
-
-          cd bin/targets/ramips/mt7621
-
-          sha256sum *.bin 2>/dev/null || true
-
-      - name: Upload T6M firmware
+      - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: ImmortalWrt-25.12-Qihoo-360T6M
-          path: |
-            immortalwrt/bin/targets/ramips/mt7621/*.bin
-            immortalwrt/bin/targets/ramips/mt7621/*.itb
-            immortalwrt/bin/targets/ramips/mt7621/sha256sums
+          name: immortalwrt-25.12-t6m
+          path: immortalwrt/bin/targets/**
           if-no-files-found: error
-          retention-days: 30
