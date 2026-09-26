@@ -1,0 +1,124 @@
+name: Build ImmortalWrt 25.12 - Qihoo 360 T6M
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ack antlr3 asciidoc autoconf automake autopoint \
+            binutils bison build-essential bzip2 ccache clang \
+            cmake cpio curl device-tree-compiler ecj fastjar \
+            flex gawk gettext gcc-multilib g++-multilib \
+            git gnutls-dev gperf haveged help2man \
+            intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev \
+            libz-dev lld llvm lrzsz make mkisofs \
+            ninja-build p7zip p7zip-full patch pkgconf \
+            python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons \
+            squashfs-tools subversion swig texinfo uglifyjs \
+            unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Clone ImmortalWrt 25.12
+        run: |
+          git clone \
+            --branch openwrt-25.12 \
+            --single-branch \
+            --filter=blob:none \
+            https://github.com/immortalwrt/immortalwrt.git
+
+          cd immortalwrt
+
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Apply Qihoo T6M support
+        run: |
+          cd immortalwrt
+
+          git fetch https://github.com/immortalwrt/immortalwrt.git pull/2436/head:t6m-pr
+
+          git cherry-pick t6m-pr
+
+      - name: Update feeds
+        working-directory: immortalwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Configure T6M
+        working-directory: immortalwrt
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7621=y
+          CONFIG_TARGET_ramips_mt7621_DEVICE_qihoo_360-t6m=y
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACKAGE_dnsmasq=y
+          CONFIG_PACKAGE_dropbear=y
+
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          CONFIG_TARGET_ROOTFS_PARTSIZE=32
+          EOF
+
+          make defconfig
+
+      - name: Show target configuration
+        working-directory: immortalwrt
+        run: |
+          echo "===== TARGET ====="
+          grep -E \
+            'CONFIG_TARGET_|CONFIG_PACKAGE_luci|CONFIG_PACKAGE_uhttpd' \
+            .config | head -100
+
+      - name: Download sources
+        working-directory: immortalwrt
+        run: |
+          make download -j8 V=s
+
+      - name: Build firmware
+        working-directory: immortalwrt
+        run: |
+          make -j$(nproc) V=s
+
+      - name: List firmware
+        working-directory: immortalwrt
+        run: |
+          echo "===== BUILD OUTPUT ====="
+          find bin/targets/ramips/mt7621 -maxdepth 2 -type f \
+            \( -name "*.bin" -o -name "*.factory.bin" -o -name "*.sysupgrade.bin" \) \
+            -print
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-25.12-qihoo-360t6m
+          path: |
+            immortalwrt/bin/targets/ramips/mt7621/*.bin
+            immortalwrt/bin/targets/ramips/mt7621/*.json
+            immortalwrt/bin/targets/ramips/mt7621/sha256sums
+          if-no-files-found: error
+          retention-days: 14
